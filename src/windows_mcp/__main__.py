@@ -178,7 +178,7 @@ def file_system_tool(
 
 @mcp.tool(
     name='Snapshot',
-    description="Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot with cursor highlight. Set width_reference_lines/height_reference_lines to overlay a grid for better spatial reasoning (make sure vision is enabled to use it). Set use_dom=True for browser content to get web page elements instead of browser UI. Set display=[0] or display=[0,1] to limit all returned Snapshot information to specific screens; omit it to keep the default full-desktop behavior. Always call this first to understand the current desktop state before taking actions.",
+    description="Captures complete desktop state including: system language, focused/opened windows, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot with cursor highlight. Set use_annotation=False to get a clean screenshot without bounding box overlays on UI elements (default: True, draws colored rectangles around detected elements). Set width_reference_lines/height_reference_lines to overlay a grid for better spatial reasoning (make sure vision is enabled to use it). Set use_dom=True for browser content to get web page elements instead of browser UI. Set display=[0] or display=[0,1] to limit all returned Snapshot information to specific screens; omit it to keep the default full-desktop behavior. Always call this first to understand the current desktop state before taking actions.",
     annotations=ToolAnnotations(
         title="Snapshot",
         readOnlyHint=True,
@@ -191,6 +191,7 @@ def file_system_tool(
 def state_tool(
     use_vision: bool | str = False,
     use_dom: bool | str = False,
+    use_annotation: bool | str = True,
     width_reference_line: int | None = None,
     height_reference_line: int | None = None,
     display: list[int] | None = None,
@@ -199,6 +200,7 @@ def state_tool(
     try:
         use_vision = use_vision is True or (isinstance(use_vision, str) and use_vision.lower() == 'true')
         use_dom = use_dom is True or (isinstance(use_dom, str) and use_dom.lower() == 'true')
+        use_annotation = use_annotation is True or (isinstance(use_annotation, str) and use_annotation.lower() == 'true')
         display_indices = Desktop.parse_display_selection(display)
         
         grid_lines = None
@@ -208,6 +210,7 @@ def state_tool(
         desktop_state = desktop.get_state(
             use_vision=use_vision,
             use_dom=use_dom,
+            use_annotation=use_annotation,
             as_bytes=False,
             grid_lines=grid_lines,
             display_indices=display_indices,
