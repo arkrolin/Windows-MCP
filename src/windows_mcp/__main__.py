@@ -187,6 +187,7 @@ def file_system_tool(
         openWorldHint=False,
     ),
 )
+
 @with_analytics(analytics, "State-Tool")
 def state_tool(
     use_vision: bool | str = False,
@@ -744,6 +745,40 @@ def registry_tool(mode: Literal['get', 'set', 'delete', 'list'], path: str, name
             return 'Error: mode must be "get", "set", "delete", or "list".'
     except Exception as e:
         return f'Error accessing registry: {str(e)}'
+
+
+@mcp.tool(
+    name="locate_text",
+    description="Locates screen text via native OCR. Supports regional and background color filtering. If multiple matches exist without a specified index, returns a labeled screenshot and coordinates.",
+    annotations=ToolAnnotations(
+        title="Locate Text",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+@with_analytics(analytics, "Locate-Text-Tool")
+async def locate_text_tool(
+    text_query: str,
+    region_hint: Literal["all", "top", "bottom", "left", "right", "center"] = "all",
+    color_hint: Literal["any", "red", "blue", "green", "black", "white", "yellow"] = "any",
+    occurrence_index: int | None = None,
+    ctx: Context = None,
+):
+    try:
+        from windows_mcp.desktop.locate_text import locate_text_tool
+        return await locate_text_tool(
+            desktop=desktop,
+            text_query=text_query,
+            region_hint=region_hint,
+            color_hint=color_hint,
+            occurrence_index=occurrence_index
+        )
+    except Exception as e:
+        import traceback
+        logger.error(f"locate_text error: {str(e)}\n{traceback.format_exc()}")
+        return [f"Error in locate_text: {str(e)}"]
 
 class Transport(Enum):
     STDIO = "stdio"
