@@ -748,8 +748,8 @@ def registry_tool(mode: Literal['get', 'set', 'delete', 'list'], path: str, name
 
 
 @mcp.tool(
-    name="locate_text",
-    description="Locates screen text via native OCR. Supports regional and background color filtering. If multiple matches exist without a specified index, returns a labeled screenshot and coordinates.",
+    name="LocateText",
+    description="Finds center bounding box for text. Keywords: text_query, use_vision, region_hint, occurrence_index; Set use_vision=True to return an annotated screenshot for verification. Use region_hint (\"top\", \"bottom\", \"left\", \"right\", \"center\") to narrow search; defaults to 'all'. Returns a list of match objects. Use occurrence_index with a specific id to select a targeted result.",
     annotations=ToolAnnotations(
         title="Locate Text",
         readOnlyHint=True,
@@ -761,8 +761,8 @@ def registry_tool(mode: Literal['get', 'set', 'delete', 'list'], path: str, name
 @with_analytics(analytics, "Locate-Text-Tool")
 async def locate_text_tool(
     text_query: str,
+    use_vision: bool | str = False,
     region_hint: Literal["all", "top", "bottom", "left", "right", "center"] = "all",
-    color_hint: Literal["any", "red", "blue", "green", "black", "white", "yellow"] = "any",
     occurrence_index: int | None = None,
     ctx: Context = None,
 ):
@@ -770,9 +770,9 @@ async def locate_text_tool(
         from windows_mcp.desktop.locate_text import locate_text_tool
         return await locate_text_tool(
             desktop=desktop,
+            use_vision=use_vision,
             text_query=text_query,
             region_hint=region_hint,
-            color_hint=color_hint,
             occurrence_index=occurrence_index
         )
     except Exception as e:

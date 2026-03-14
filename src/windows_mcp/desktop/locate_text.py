@@ -2,7 +2,6 @@ import io
 import json
 import random
 import logging
-import colorsys
 from typing import List, Dict, Any
 from PIL import Image, ImageDraw, ImageFont
 from fuzzywuzzy import fuzz
@@ -15,16 +14,52 @@ from fastmcp.utilities.types import Image as McpImage
 logger = logging.getLogger(__name__)
 
 
-# clean for CJK languages: remove spaces between CJK characters that OCR might have inserted
 def clean_ocr_text(text: str) -> str:
+    """
+    clean for CJK languages:
+    remove spaces between CJK characters that OCR might have inserted
+    """
+
     cleaned = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])", "", text)
     return cleaned
+
+
+def _process_image_for_transfer(
+    image: Image.Image, max_dimension: int = 1600, quality: int = 75
+) -> bytes:
+    """
+    Compress the image and convert to JPEG format to reduce size
+    """
+
+    # Limit Image Transfer Size
+    if image.width > max_dimension or image.height > max_dimension:
+        image.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+
+    buffered = io.BytesIO()
+    # PNG -> JPEG
+    image.convert("RGB").save(buffered, format="JPEG", quality=quality)
+    img_bytes = buffered.getvalue()
+    buffered.close()
+    return img_bytes
 
 
 async def _perform_ocr(
     screenshot: Image.Image, text_query: str
 ) -> List[Dict[str, Any]]:
-    # Use winrt-Windows.Media.Ocr if available, else winsdk
+    """uses Windows OCR APIs to find text in the given screenshot and return their bounding boxes.
+
+    Args:
+        screenshot (Image.Image): screenshot of the desktop to perform OCR on
+        text_query (str): text to search for in the OCR results.
+
+    Raises:
+        RuntimeError: winrt not available
+        RuntimeError: no OCR engine available
+
+    Returns:
+        List[Dict[str, Any]]: Matched text content with bounding boxes in the format {"text": str, "rect": (x, y, w, h)}
+    """
+
     try:
         import winrt.windows.media.ocr as ocr
         import winrt.windows.graphics.imaging as imaging
@@ -50,7 +85,7 @@ async def _perform_ocr(
         imaging.BitmapPixelFormat.BGRA8, bgra_image.width, bgra_image.height
     )
     bmp.copy_from_buffer(buffer)
-    # ===================================================================
+
     languages = ocr.OcrEngine.available_recognizer_languages
     target_lang = None
     for lang in languages:
@@ -86,7 +121,6 @@ async def _perform_ocr(
             }
         )
 
-        # Additional granularity: add words independently just in case
         for word in line.words:
             if word.text.strip():
                 matches.append(
@@ -104,61 +138,28 @@ async def _perform_ocr(
     return matches
 
 
-def _check_color(
-    image: Image.Image, rect: tuple[float, float, float, float], color_hint: str
-) -> bool:
-    x, y, w, h = rect
-    # Sample the perimeter (bg) rather than the text (center) to avoid ClearType antialiasing issues
-    samples = []
-    step = 5
-    for i in range(int(x), int(x + w), step):
-        if 0 <= y - step < image.height and 0 <= i < image.width:
-            samples.append(image.getpixel((i, int(y - step))))
-        if 0 <= y + h + step < image.height and 0 <= i < image.width:
-            samples.append(image.getpixel((i, int(y + h + step))))
-
-    for j in range(int(y), int(y + h), step):
-        if 0 <= x - step < image.width and 0 <= j < image.height:
-            samples.append(image.getpixel((int(x - step), j)))
-        if 0 <= x + w + step < image.width and 0 <= j < image.height:
-            samples.append(image.getpixel((int(x + w + step), j)))
-
-    if not samples:
-        return True
-
-    hsv_samples = [
-        colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0) for r, g, b, *a in samples
-    ]
-
-    # Calculate mode / average components
-    v_avg = sum(v for h, s, v in hsv_samples) / len(hsv_samples)
-
-    if color_hint == "black":
-        return v_avg < 0.3
-    if color_hint == "white":
-        return v_avg > 0.7
-
-    hue_avg = sum(h for h, s, v in hsv_samples) / len(hsv_samples) * 360
-
-    if color_hint == "red":
-        return hue_avg < 20 or hue_avg > 340
-    elif color_hint == "blue":
-        return 180 <= hue_avg <= 260
-    elif color_hint == "green":
-        return 80 <= hue_avg <= 160
-    elif color_hint == "yellow":
-        return 40 <= hue_avg <= 70
-
-    return True
-
-
 async def locate_text_tool(
     desktop,
     text_query: str,
+    use_vision: bool = False,
     region_hint: str = "all",
-    color_hint: str = "any",
     occurrence_index: int | None = None,
 ):
+    """Analyze the match results, calculate the center position, duplicate item deletion and match the output.
+
+    Args:
+        desktop (_type_): from services
+        text_query (str): text to search for in the OCR results.
+        use_vision (bool, optional): whether to return picture data. Defaults to False.
+        region_hint (str, optional): use for partial pruning. Defaults to "all".
+        occurrence_index (int | None, optional): the index of the specific occurrence to return. Defaults to None.
+
+    Returns:
+        A serialized list containing match information in dictionary form and labeled images.
+        Each match dictionary includes the center point coordinates, bounding box dimensions, and a unique ID.
+        If use_vision is True, an annotated image with bounding boxes and labels for each match is also returned.
+    """
+
     screenshot = desktop.get_screenshot()
 
     left_offset, top_offset, _, _ = uia.GetVirtualScreenRect()
@@ -182,7 +183,7 @@ async def locate_text_tool(
 
         is_exact_in = text_query_lower in text_lower
 
-        is_fuzzy_match = fuzz.ratio(text_query_lower, text_lower) > 75
+        is_fuzzy_match = fuzz.ratio(text_query_lower, text_lower) > 80
 
         if not (is_exact_in or is_fuzzy_match):
             continue
@@ -193,7 +194,7 @@ async def locate_text_tool(
         rx, ry, rw, rh = rect
         cx, cy = rx + rw / 2, ry + rh / 2
 
-        # 2. Spatial Pruning
+        # Spatial Pruning
         if region_hint == "top" and cy > screen_h / 2:
             continue
         if region_hint == "bottom" and cy < screen_h / 2:
@@ -209,11 +210,6 @@ async def locate_text_tool(
             or cy > screen_h * 3 / 4
         ):
             continue
-
-        # 3. Visual Verification Pruning
-        if color_hint != "any":
-            if not _check_color(screenshot, rect, color_hint):
-                continue
 
         bounds_dict = {
             "x": int(rx + left_offset),
@@ -249,118 +245,156 @@ async def locate_text_tool(
         )
 
     if not filtered_matches:
-        return [
-            json.dumps(
-                {
-                    "status": "error",
-                    "message": f"Text '{text_query}' not found. Please try reducing color/region constraints or using a shorter query.",
-                }
-            )
-        ]
-
-    # Scenario A: Distinct Match / Explicit Index
-    # When explicit occurrence_index is provided OR there is only one match
-    if len(filtered_matches) == 1 or occurrence_index is not None:
-        idx = 0 if occurrence_index is None else occurrence_index - 1
-        if idx < 0 or idx >= len(filtered_matches):
+        if use_vision:
+            screenshot_bytes = _process_image_for_transfer(screenshot)
             return [
                 json.dumps(
                     {
                         "status": "error",
-                        "message": f"occurrence_index {occurrence_index} out of bounds (found {len(filtered_matches)} matches).",
-                    }
-                )
+                        "message": f"Text '{text_query}' not found. Please try region constraints or using a shorter query.",
+                        "data": [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                McpImage(data=screenshot_bytes, format="jpeg"),
             ]
-
-        match = filtered_matches[idx]
         return [
             json.dumps(
                 {
-                    "status": "success",
-                    "data": {
-                        "point": match["center_point"],
-                        "bounds": match["bounds"],
-                        "text_found": match["text"],
-                    },
+                    "status": "error",
+                    "message": f"Text '{text_query}' not found. Please try region constraints or using a shorter query.",
+                    "data": [],
                 },
                 ensure_ascii=False,
                 indent=2,
             )
         ]
 
-    # Scenario B: Disambiguation / Set-of-Mark
-    padding = 5
-    width = int(screenshot.width + (1.5 * padding))
-    height = int(screenshot.height + (1.5 * padding))
-    padded_screenshot = Image.new("RGB", (width, height), color=(255, 255, 255))
-    padded_screenshot.paste(screenshot, (padding, padding))
-
-    draw = ImageDraw.Draw(padded_screenshot)
-    try:
-        font = ImageFont.truetype("arial.ttf", 14)
-    except IOError:
-        font = ImageFont.load_default()
-
+    # Pre-calculate candidates
     candidates = []
-
     for i, match in enumerate(filtered_matches):
-        c_id = i + 1
-        x, y, w, h = match["rect_local"]
-
-        # Offset applied for the padding in padded_screenshot
-        rx, ry = x + padding, y + padding
-
         candidates.append(
             {
-                "id": c_id,
                 "center_point": match["center_point"],
-                "label": f"[{match['text']}]",
+                "bounds": match["bounds"],
+                "id": i + 1,
+                "text": match["text"],
+                "rect_local": match["rect_local"],
             }
         )
 
-        # Draw bounding rect
-        color = "#{:06x}".format(random.randint(0, 0xFFFFFF))
-        adjusted_box = (rx, ry, rx + w, ry + h)
-        draw.rectangle(adjusted_box, outline=color, width=2)
+    # Prepare Image if use_vision is True
+    screenshot_bytes = None
+    if use_vision:
+        padding = 5
+        width = int(screenshot.width + (1.5 * padding))
+        height = int(screenshot.height + (1.5 * padding))
+        padded_screenshot = Image.new("RGB", (width, height), color=(255, 255, 255))
+        padded_screenshot.paste(screenshot, (padding, padding))
 
-        # Draw label ID tag
-        label_text = str(c_id)
-        label_width = draw.textlength(label_text, font=font)
-        label_height = 14
+        draw = ImageDraw.Draw(padded_screenshot)
+        try:
+            font = ImageFont.truetype("arial.ttf", 14)
+        except IOError:
+            font = ImageFont.load_default()
 
-        label_x1 = rx
-        label_y1 = ry - label_height - 4
-        label_x2 = label_x1 + label_width + 4
-        label_y2 = ry
+        # Determine which candidates to draw
+        targets_to_draw = candidates
+        if (
+            len(filtered_matches) == 1 or occurrence_index is not None
+        ) and occurrence_index is not None:
+            # If explicit index provided, only draw that one if valid
+            idx = occurrence_index - 1
+            if 0 <= idx < len(filtered_matches):
+                targets_to_draw = [candidates[idx]]
 
-        draw.rectangle([(label_x1, label_y1), (label_x2, label_y2)], fill=color)
-        draw.text(
-            (label_x1 + 2, label_y1 + 2), label_text, fill=(255, 255, 255), font=font
-        )
+        for cand in targets_to_draw:
+            c_id = cand["id"]
+            x, y, w, h = cand["rect_local"]
 
-    # Limit Image Transfer Size
-    max_dimension = 1600
-    if (
-        padded_screenshot.width > max_dimension
-        or padded_screenshot.height > max_dimension
-    ):
-        padded_screenshot.thumbnail(
-            (max_dimension, max_dimension), Image.Resampling.LANCZOS
-        )
+            # Offset applied for the padding in padded_screenshot
+            rx, ry = x + padding, y + padding
 
-    buffered = io.BytesIO()
-    # 2. PNG -> JPEG,quality = 75
-    padded_screenshot.convert("RGB").save(buffered, format="JPEG", quality=75)
-    screenshot_bytes = buffered.getvalue()
-    buffered.close()
+            # Draw bounding rect
+            color = "#{:06x}".format(random.randint(0, 0xFFFFFF))
+            adjusted_box = (rx, ry, rx + w, ry + h)
+            draw.rectangle(adjusted_box, outline=color, width=2)
 
+            # Draw label ID tag
+            label_text = str(c_id)
+            label_width = draw.textlength(label_text, font=font)
+            label_height = 14
+
+            label_x1 = rx
+            label_y1 = ry - label_height - 4
+            label_x2 = label_x1 + label_width + 4
+            label_y2 = ry
+
+            draw.rectangle([(label_x1, label_y1), (label_x2, label_y2)], fill=color)
+            draw.text(
+                (label_x1 + 2, label_y1 + 2),
+                label_text,
+                fill=(255, 255, 255),
+                font=font,
+            )
+
+        screenshot_bytes = _process_image_for_transfer(padded_screenshot)
+
+    # Return data arrays without internal dict bloat
+    output_candidates = [
+        {
+            "center_point": c["center_point"],
+            "bounds": c["bounds"],
+            "id": c["id"],
+        }
+        for c in candidates
+    ]
+
+    # Scenario A: Distinct Match / Explicit Index
+    if len(filtered_matches) == 1 or occurrence_index is not None:
+        idx = 0 if occurrence_index is None else occurrence_index - 1
+        if idx < 0 or idx >= len(filtered_matches):
+            response = [
+                json.dumps(
+                    {
+                        "status": "error",
+                        "message": f"occurrence_index {occurrence_index} out of bounds (found {len(filtered_matches)} matches).",
+                        "data": [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            ]
+            if use_vision and screenshot_bytes:
+                response.append(McpImage(data=screenshot_bytes, format="jpeg"))
+            return response
+
+        match_data = output_candidates[idx]
+        response = [
+            json.dumps(
+                {
+                    "status": "clear",
+                    "message": "found a clear match for the query.",
+                    "data": [match_data],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        ]
+        if use_vision and screenshot_bytes:
+            response.append(McpImage(data=screenshot_bytes, format="jpeg"))
+        return response
+
+    # Scenario B: Disambiguation / Set-of-Mark
     response_json = {
         "status": "ambiguous",
-        "message": f"Multiple matching targets found (total: {len(candidates)}). Please refer to the numbered labels in the image to rerun this tool with a specified `occurrence_index`, or use coordinates listed in the `candidates` list below.",
-        "candidates": candidates,
+        "message": f"Multiple matching targets found (total: {len(output_candidates)}). Please refer to the numbered labels in the image to rerun this tool with a specified occurrence_index, or use coordinates listed in the data list below.",
+        "data": output_candidates,
     }
 
-    return [
-        json.dumps(response_json, ensure_ascii=False, indent=2),
-        McpImage(data=screenshot_bytes, format="jpeg"),
-    ]
+    response = [json.dumps(response_json, ensure_ascii=False, indent=2)]
+    if use_vision and screenshot_bytes:
+        response.append(McpImage(data=screenshot_bytes, format="jpeg"))
+
+    return response

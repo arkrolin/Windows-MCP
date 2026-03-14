@@ -131,6 +131,10 @@
     {
       "name": "Registry",
       "description": "Accesses the Windows Registry. Use mode=\"get\" to read a value, mode=\"set\" to create/update a value, mode=\"delete\" to remove a value or key, mode=\"list\" to list values and sub-keys under a path."
+    },
+    {
+      "name": "LocateText",
+      "description": "Finds center [x, y], bounding box [left, top, width, height], and id for text. Set use_vision=True to return an annotated screenshot for verification. Use region_hint (\"top\", \"bottom\", \"left\", \"right\", \"center\") to narrow search; defaults to 'all'. Returns a list of match objects. Use occurrence_index with a specific id to select a targeted result."
     }
   ],
   "compatibility": {

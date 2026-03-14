@@ -81,7 +81,9 @@ class DesktopState:
         if not self.active_window:
             return "No active window found"
         headers = ["Name", "Depth", "Status", "Width", "Height", "Handle"]
-        return tabulate([self.active_window.to_row()], headers=headers, tablefmt="simple")
+        return tabulate(
+            [self.active_window.to_row()], headers=headers, tablefmt="simple"
+        )
 
     def windows_to_string(self):
         if not self.windows:

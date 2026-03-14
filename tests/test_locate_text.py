@@ -42,21 +42,47 @@ async def test_locate_text_no_matches(mock_desktop, mock_uia_screen_rect):
 
 
 @pytest.mark.asyncio
+async def test_locate_text_no_matches_with_vision(mock_desktop, mock_uia_screen_rect):
+    with patch("windows_mcp.desktop.locate_text._perform_ocr", return_value=[]):
+        result = await locate_text_tool(
+            mock_desktop, text_query="MissingText", use_vision=True
+        )
+        assert len(result) == 2
+        data = json.loads(result[0])
+        assert data["status"] == "error"
+        assert hasattr(result[1], "data")  # McpImage
+
+
+@pytest.mark.asyncio
 async def test_locate_text_single_match(mock_desktop, mock_uia_screen_rect):
     mock_ocr_result = [{"text": "Submit", "rect": (50, 50, 100, 40)}]
     with patch(
         "windows_mcp.desktop.locate_text._perform_ocr", return_value=mock_ocr_result
     ):
-        # We also mock check_color just in case
-        with patch("windows_mcp.desktop.locate_text._check_color", return_value=True):
-            result = await locate_text_tool(mock_desktop, text_query="Submit")
-            assert len(result) == 1
-            data = json.loads(result[0])
-            assert data["status"] == "success"
+        result = await locate_text_tool(mock_desktop, text_query="Submit")
+        assert len(result) == 1
+        data = json.loads(result[0])
+        assert data["status"] == "clear"
 
-            assert data["data"]["point"]["x"] == 100
-            assert data["data"]["point"]["y"] == 70
-            assert data["data"]["bounds"]["w"] == 100
+        assert data["data"][0]["center_point"]["x"] == 100
+        assert data["data"][0]["center_point"]["y"] == 70
+        assert data["data"][0]["bounds"]["w"] == 100
+
+
+@pytest.mark.asyncio
+async def test_locate_text_single_match_with_vision(mock_desktop, mock_uia_screen_rect):
+    mock_ocr_result = [{"text": "Submit", "rect": (50, 50, 100, 40)}]
+    with patch(
+        "windows_mcp.desktop.locate_text._perform_ocr", return_value=mock_ocr_result
+    ):
+        result = await locate_text_tool(
+            mock_desktop, text_query="Submit", use_vision=True
+        )
+        assert len(result) == 2
+        data = json.loads(result[0])
+        assert data["status"] == "clear"
+        assert data["data"][0]["center_point"]["x"] == 100
+        assert hasattr(result[1], "data")  # McpImage
 
 
 @pytest.mark.asyncio
@@ -71,19 +97,35 @@ async def test_locate_text_ambiguous(mock_desktop, mock_uia_screen_rect):
     ):
         result = await locate_text_tool(mock_desktop, text_query="Button")
 
-        # Should return JSON and an Image
-        assert len(result) == 2
+        # Should return JSON
+        assert len(result) == 1
 
         data = json.loads(result[0])
         assert data["status"] == "ambiguous"
-        assert len(data["candidates"]) == 3
-        assert data["candidates"][0]["id"] == 1
-        assert data["candidates"][1]["id"] == 2
-        assert data["candidates"][2]["id"] == 3
+        assert len(data["data"]) == 3
+        assert data["data"][0]["id"] == 1
+        assert data["data"][1]["id"] == 2
+        assert data["data"][2]["id"] == 3
 
-        # Second item should be the image
-        assert hasattr(result[1], "data")
-        assert getattr(result[1], "_format", None) == "jpeg"
+
+@pytest.mark.asyncio
+async def test_locate_text_ambiguous_with_vision(mock_desktop, mock_uia_screen_rect):
+    mock_ocr_result = [
+        {"text": "Button", "rect": (10, 10, 50, 20)},
+        {"text": "Button", "rect": (10, 100, 50, 20)},
+        {"text": "ButtonX", "rect": (10, 200, 50, 20)},
+    ]
+    with patch(
+        "windows_mcp.desktop.locate_text._perform_ocr", return_value=mock_ocr_result
+    ):
+        result = await locate_text_tool(
+            mock_desktop, text_query="Button", use_vision=True
+        )
+        assert len(result) == 2
+        data = json.loads(result[0])
+        assert data["status"] == "ambiguous"
+        assert len(data["data"]) == 3
+        assert hasattr(result[1], "data")  # McpImage
 
 
 @pytest.mark.asyncio
@@ -102,9 +144,30 @@ async def test_locate_text_ambiguous_with_index(mock_desktop, mock_uia_screen_re
         assert len(result) == 1
 
         data = json.loads(result[0])
-        assert data["status"] == "success"
+        assert data["status"] == "clear"
         # The 2nd item has bounds x=100
-        assert data["data"]["bounds"]["x"] == 100
+        assert data["data"][0]["bounds"]["x"] == 100
+
+
+@pytest.mark.asyncio
+async def test_locate_text_ambiguous_with_index_with_vision(
+    mock_desktop, mock_uia_screen_rect
+):
+    mock_ocr_result = [
+        {"text": "Apply", "rect": (0, 0, 10, 10)},
+        {"text": "Apply", "rect": (100, 100, 10, 10)},
+    ]
+    with patch(
+        "windows_mcp.desktop.locate_text._perform_ocr", return_value=mock_ocr_result
+    ):
+        result = await locate_text_tool(
+            mock_desktop, text_query="Apply", occurrence_index=2, use_vision=True
+        )
+        assert len(result) == 2
+        data = json.loads(result[0])
+        assert data["status"] == "clear"
+        assert data["data"][0]["bounds"]["x"] == 100
+        assert hasattr(result[1], "data")  # McpImage
 
 
 @pytest.mark.asyncio
@@ -125,12 +188,36 @@ async def test_locate_text_spatial_pruning(mock_desktop, mock_uia_screen_rect):
         # Since the second one is pruned, we are left with exactly 1 match -> Success!
         assert len(result) == 1
         data = json.loads(result[0])
-        assert data["status"] == "success"
-        assert data["data"]["point"]["y"] == 20
+        assert data["status"] == "clear"
+        assert data["data"][0]["center_point"]["y"] == 20
 
 
 @pytest.mark.asyncio
-async def test_locate_text_center_ambiguous_from_test_png_and_save_artifacts():
+async def test_locate_text_spatial_pruning_with_vision(
+    mock_desktop, mock_uia_screen_rect
+):
+    mock_ocr_result = [
+        {"text": "TopNav", "rect": (10, 10, 50, 20)},
+        {"text": "TopNav", "rect": (10, 500, 50, 20)},
+    ]
+    with patch(
+        "windows_mcp.desktop.locate_text._perform_ocr", return_value=mock_ocr_result
+    ):
+        result = await locate_text_tool(
+            mock_desktop, text_query="TopNav", region_hint="top", use_vision=True
+        )
+        assert len(result) == 2
+        data = json.loads(result[0])
+        assert data["status"] == "clear"
+        assert data["data"][0]["center_point"]["y"] == 20
+        assert hasattr(result[1], "data")  # McpImage
+        assert (
+            type(result[1].data).__name__ == "bytes"
+        ), f"Expected type img_bytes, got {type(result[1].data).__name__}"
+
+
+@pytest.mark.asyncio
+async def test_locate_text_center_ambiguous():
     test_png = (
         Path(__file__).parent.parent / "assets" / "screenshots" / "screenshot_1.png"
     )
@@ -170,29 +257,18 @@ async def test_locate_text_center_ambiguous_from_test_png_and_save_artifacts():
                 region_hint="center",
             )
 
-    assert len(result) == 2
+    assert len(result) == 1
 
     data = json.loads(result[0])
     assert data["status"] == "ambiguous"
-    assert len(data["candidates"]) == 2
+    assert len(data["data"]) == 2
 
-    candidate_ids = [c["id"] for c in data["candidates"]]
+    candidate_ids = [c["id"] for c in data["data"]]
     assert candidate_ids == [1, 2], f"Expected IDs [1, 2], but got {candidate_ids}"
-
-    image_bytes = getattr(result[1], "data", None)
-    assert image_bytes
-
-    base64_image = base64.b64encode(image_bytes).decode("ascii")
-    preview_payload = {
-        "status": data["status"],
-        "message": data["message"],
-        "candidates": data["candidates"],
-        "image_attachment": f"data:image/png;base64,{base64_image}",
-    }
 
 
 @pytest.mark.asyncio
-async def test_real_ocr_integration_and_save_artifacts():
+async def test_real_ocr_integration_with_vision():
     """
     mark for screenshot_1.png。
     """
@@ -212,22 +288,23 @@ async def test_real_ocr_integration_and_save_artifacts():
     ):
         result = await locate_text_tool(
             desktop,
+            use_vision=True,
             text_query="Claude",
             region_hint="all",
-            color_hint="any",
         )
 
-    assert len(result) > 0, "OCR finds no matches"
     data = json.loads(result[0])
-
     if data["status"] == "ambiguous":
-        assert len(result) == 2, "ambiguous result should include image"
-        image_bytes = getattr(result[1], "data", None)
-        assert image_bytes
+        assert len(data["data"]) == 3, "Expected 3 matches for 'Claude'"
 
-    elif data["status"] == "success":
+    elif data["status"] == "clear":
         pytest.fail(
-            f"expected ambiguous due to multiple 'Tools' matches, but got success"
+            f"expected ambiguous due to multiple 'Tools' matches, but got clear"
         )
     else:
         pytest.fail(f"can't find '{data.get('message')}'")
+
+    assert hasattr(result[1], "data")  # McpImage
+    assert (
+        type(result[1].data).__name__ == "bytes"
+    ), f"Expected type img_bytes, got {type(result[1].data).__name__}"
